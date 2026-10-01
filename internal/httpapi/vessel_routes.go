@@ -17,14 +17,20 @@ func registerVesselRoutes(mux *http.ServeMux, app *service.Service) {
 		if !handleDecode(response, err) {
 			return
 		}
-		vessel, err := app.CreateVessel(service.CreateVesselInput{
-			Code:      body.Code,
-			CapacityL: body.CapacityL,
+		idempotencyKey, err := idempotencyHeader(request)
+		if !handleDecode(response, err) {
+			return
+		}
+		vessel, replayed, err := app.CreateVessel(service.CreateVesselInput{
+			Code:           body.Code,
+			CapacityL:      body.CapacityL,
+			IdempotencyKey: idempotencyKey,
 		})
 		if err != nil {
 			writeDomainError(response, err)
 			return
 		}
+		writeReplayHeader(response, replayed)
 		writeJSON(response, http.StatusCreated, vessel)
 	})
 
@@ -51,12 +57,17 @@ func registerVesselRoutes(mux *http.ServeMux, app *service.Service) {
 		if !handleDecode(response, err) {
 			return
 		}
-		vessel, err := app.FinishCleaning(request.PathValue("id"),
-			service.FinishCleaningInput{ExpectedVersion: expected})
+		idempotencyKey, err := idempotencyHeader(request)
+		if !handleDecode(response, err) {
+			return
+		}
+		vessel, replayed, err := app.FinishCleaning(request.PathValue("id"),
+			service.FinishCleaningInput{ExpectedVersion: expected, IdempotencyKey: idempotencyKey})
 		if err != nil {
 			writeDomainError(response, err)
 			return
 		}
+		writeReplayHeader(response, replayed)
 		writeJSON(response, http.StatusOK, vessel)
 	})
 
@@ -65,12 +76,17 @@ func registerVesselRoutes(mux *http.ServeMux, app *service.Service) {
 		if !handleDecode(response, err) {
 			return
 		}
-		vessel, err := app.RetireVessel(request.PathValue("id"),
-			service.VersionInput{ExpectedVersion: expected})
+		idempotencyKey, err := idempotencyHeader(request)
+		if !handleDecode(response, err) {
+			return
+		}
+		vessel, replayed, err := app.RetireVessel(request.PathValue("id"),
+			service.VersionInput{ExpectedVersion: expected, IdempotencyKey: idempotencyKey})
 		if err != nil {
 			writeDomainError(response, err)
 			return
 		}
+		writeReplayHeader(response, replayed)
 		writeJSON(response, http.StatusOK, vessel)
 	})
 }

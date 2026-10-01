@@ -23,6 +23,10 @@ const (
 	CodeObservationConflict Code = "observation_conflict"
 	CodeRevisionConflict    Code = "revision_conflict"
 	CodeStorage             Code = "storage_error"
+	CodeTrajectoryNotFound  Code = "trajectory_entry_not_found"
+	CodeTrajectoryConflict  Code = "trajectory_version_conflict"
+	CodeTrajectoryCorrupt   Code = "trajectory_ledger_corrupt"
+	CodeIdempotencyConflict Code = "idempotency_conflict"
 )
 
 type Error struct {

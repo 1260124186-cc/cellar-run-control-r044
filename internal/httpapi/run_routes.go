@@ -32,16 +32,22 @@ func registerRunRoutes(mux *http.ServeMux, app *service.Service) {
 		if !handleDecode(response, err) {
 			return
 		}
-		run, err := app.CreateRun(service.CreateRunInput{
+		idempotencyKey, err := idempotencyHeader(request)
+		if !handleDecode(response, err) {
+			return
+		}
+		run, replayed, err := app.CreateRun(service.CreateRunInput{
 			Code:           body.Code,
 			FormulaID:      body.FormulaID,
 			PlannedVolumeL: body.PlannedVolumeL,
 			Notes:          body.Notes,
+			IdempotencyKey: idempotencyKey,
 		})
 		if err != nil {
 			writeDomainError(response, err)
 			return
 		}
+		writeReplayHeader(response, replayed)
 		writeJSON(response, http.StatusCreated, run)
 	})
 
@@ -72,14 +78,20 @@ func registerRunRoutes(mux *http.ServeMux, app *service.Service) {
 		if !handleDecode(response, err) {
 			return
 		}
-		run, vessel, err := app.ReserveRun(request.PathValue("id"), service.ReserveRunInput{
+		idempotencyKey, err := idempotencyHeader(request)
+		if !handleDecode(response, err) {
+			return
+		}
+		run, vessel, replayed, err := app.ReserveRun(request.PathValue("id"), service.ReserveRunInput{
 			ExpectedVersion: expected,
 			VesselID:        body.VesselID,
+			IdempotencyKey:  idempotencyKey,
 		})
 		if err != nil {
 			writeDomainError(response, err)
 			return
 		}
+		writeReplayHeader(response, replayed)
 		writeJSON(response, http.StatusOK, map[string]any{"run": run, "vessel": vessel})
 	})
 
@@ -88,12 +100,17 @@ func registerRunRoutes(mux *http.ServeMux, app *service.Service) {
 		if !handleDecode(response, err) {
 			return
 		}
-		run, vessel, err := app.StartRun(request.PathValue("id"),
-			service.VersionInput{ExpectedVersion: expected})
+		idempotencyKey, err := idempotencyHeader(request)
+		if !handleDecode(response, err) {
+			return
+		}
+		run, vessel, replayed, err := app.StartRun(request.PathValue("id"),
+			service.VersionInput{ExpectedVersion: expected, IdempotencyKey: idempotencyKey})
 		if err != nil {
 			writeDomainError(response, err)
 			return
 		}
+		writeReplayHeader(response, replayed)
 		writeJSON(response, http.StatusOK, map[string]any{"run": run, "vessel": vessel})
 	})
 
@@ -102,17 +119,23 @@ func registerRunRoutes(mux *http.ServeMux, app *service.Service) {
 		if !handleDecode(response, err) {
 			return
 		}
-		run, err := app.AppendObservation(request.PathValue("id"), service.ObservationInput{
-			Sequence:     body.Sequence,
-			Gravity:      body.Gravity,
-			TemperatureC: body.TemperatureC,
-			ObservedAt:   body.ObservedAt,
-			Note:         body.Note,
+		idempotencyKey, err := idempotencyHeader(request)
+		if !handleDecode(response, err) {
+			return
+		}
+		run, replayed, err := app.AppendObservation(request.PathValue("id"), service.ObservationInput{
+			Sequence:       body.Sequence,
+			Gravity:        body.Gravity,
+			TemperatureC:   body.TemperatureC,
+			ObservedAt:     body.ObservedAt,
+			Note:           body.Note,
+			IdempotencyKey: idempotencyKey,
 		})
 		if err != nil {
 			writeDomainError(response, err)
 			return
 		}
+		writeReplayHeader(response, replayed)
 		writeJSON(response, http.StatusOK, run)
 	})
 
@@ -121,12 +144,17 @@ func registerRunRoutes(mux *http.ServeMux, app *service.Service) {
 		if !handleDecode(response, err) {
 			return
 		}
-		run, err := app.BeginConditioning(request.PathValue("id"),
-			service.VersionInput{ExpectedVersion: expected})
+		idempotencyKey, err := idempotencyHeader(request)
+		if !handleDecode(response, err) {
+			return
+		}
+		run, replayed, err := app.BeginConditioning(request.PathValue("id"),
+			service.VersionInput{ExpectedVersion: expected, IdempotencyKey: idempotencyKey})
 		if err != nil {
 			writeDomainError(response, err)
 			return
 		}
+		writeReplayHeader(response, replayed)
 		writeJSON(response, http.StatusOK, run)
 	})
 
@@ -135,12 +163,17 @@ func registerRunRoutes(mux *http.ServeMux, app *service.Service) {
 		if !handleDecode(response, err) {
 			return
 		}
-		run, vessel, err := app.CompleteRun(request.PathValue("id"),
-			service.VersionInput{ExpectedVersion: expected})
+		idempotencyKey, err := idempotencyHeader(request)
+		if !handleDecode(response, err) {
+			return
+		}
+		run, vessel, replayed, err := app.CompleteRun(request.PathValue("id"),
+			service.VersionInput{ExpectedVersion: expected, IdempotencyKey: idempotencyKey})
 		if err != nil {
 			writeDomainError(response, err)
 			return
 		}
+		writeReplayHeader(response, replayed)
 		writeJSON(response, http.StatusOK, map[string]any{"run": run, "vessel": vessel})
 	})
 
@@ -149,12 +182,17 @@ func registerRunRoutes(mux *http.ServeMux, app *service.Service) {
 		if !handleDecode(response, err) {
 			return
 		}
-		run, vessel, err := app.AbortRun(request.PathValue("id"),
-			service.VersionInput{ExpectedVersion: expected})
+		idempotencyKey, err := idempotencyHeader(request)
+		if !handleDecode(response, err) {
+			return
+		}
+		run, vessel, replayed, err := app.AbortRun(request.PathValue("id"),
+			service.VersionInput{ExpectedVersion: expected, IdempotencyKey: idempotencyKey})
 		if err != nil {
 			writeDomainError(response, err)
 			return
 		}
+		writeReplayHeader(response, replayed)
 		writeJSON(response, http.StatusOK, map[string]any{"run": run, "vessel": vessel})
 	})
 }

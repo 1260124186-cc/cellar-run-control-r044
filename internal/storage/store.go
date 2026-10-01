@@ -78,7 +78,18 @@ func normalizeSnapshot(value domain.Snapshot) (domain.Snapshot, error) {
 	if value.RunIndex == nil {
 		value.RunIndex = map[string]string{}
 	}
+	if value.Trajectory == nil {
+		value.Trajectory = []domain.TrajectoryEntry{}
+	}
+	if value.IdempotencyByKey == nil {
+		value.IdempotencyByKey = map[string]domain.IdempotencyRecord{}
+	}
 	if err := validateIndexes(value); err != nil {
+		return domain.Snapshot{}, err
+	}
+	// The ledger is the source of truth for its own derived indexes: verify
+	// the hash chain first, then rebuild id/version indexes from the rows.
+	if err := domain.RebuildTrajectoryIndexes(&value); err != nil {
 		return domain.Snapshot{}, err
 	}
 	return value, nil
@@ -138,6 +149,13 @@ func (s *Store) Revision() int64 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.snapshot.Revision
+}
+
+// TrajectorySize reports the number of committed ledger entries.
+func (s *Store) TrajectorySize() int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return int64(len(s.snapshot.Trajectory))
 }
 
 func (s *Store) View(visitor func(domain.Snapshot) error) error {

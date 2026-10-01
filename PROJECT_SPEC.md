@@ -6,9 +6,14 @@ Cellar Run Control is a local Go HTTP service for a small production cellar.
 It coordinates approved formulas, vessel reservation, active fermentation
 runs, gravity observations, conditioning, completion, and vessel release.
 
-The project is a healthy initialization baseline. It contains no intentional
-defects, no model traces, and no automated tests. Verification is intentionally
-deferred to a later engineering task.
+Every business state change is also recorded in an append-only production
+trajectory ledger. The ledger, not the current aggregate fields alone, is the
+quality-control record of what happened: which observation, vessel change, or
+completion occurred first, along which formula -> run -> vessel lineage.
+
+The project is a healthy initialization baseline extended with the trajectory
+ledger, focused unit tests, and a fourth bounded workflow check. It contains
+no intentional defects.
 
 ## Users
 
@@ -97,6 +102,39 @@ time, gravity, temperature, optional note, and receipt time.
 - Gravity must not rise more than 0.010 above the immediately preceding value.
 - Observation sequences are contiguous and start at 1.
 
+### ProductionTrajectory
+
+The trajectory is the append-only ledger of business actions. It is a gapless,
+hash-chained sequence of immutable entries stored alongside the aggregates.
+
+An entry contains a global contiguous `sequence` starting at 1, a unique `id`,
+a closed-set `action`, a business `occurred_at`, a persistence `recorded_at`,
+a reference list, an action-specific `payload`, `prev_hash`, and `entry_hash`.
+
+- References identify exactly one `subject` (the aggregate the action acts on,
+  with the version the action produced) and any number of `lineage` references
+  to the related formula, vessel, and run.
+- `entry_hash` signs the canonical JSON of the entry fields including
+  `prev_hash`; key order is canonicalized so hashes survive a JSON round trip.
+- The first entry has an empty `prev_hash`; every later entry signs the
+  previous entry's hash. Deleting, reordering, or altering any row breaks the
+  chain and is rejected at startup.
+- The action set is closed and covers formula create/steps/approve/retire,
+  vessel create/reserve/cleaning-start/cleaning-finish/retire/reservation-
+  release, and run create/start/observation/conditioning/complete/abort.
+- One subject aggregate version maps to exactly one ledger entry. The version
+  index is derived from the ledger and rebuilt on load.
+- A business mutation and its ledger entry are appended inside one atomic
+  snapshot transaction. If validation or persistence fails, neither the
+  aggregate change nor the ledger row is visible.
+- Reads traverse the stored slice, which is the sequence order. Paged reads
+  use opaque sequence cursors, and time-window reads filter on `occurred_at`.
+  Both are stable while rows are appended, under export, and across restart.
+- Clients may send an `Idempotency-Key` on writes. The key plus a fingerprint
+  of request-controlled parameters is stored in the same transaction. The same
+  key with the same parameters replays the original result without a new entry;
+  the same key with different parameters returns `idempotency_conflict`.
+
 ## Connected Workflows
 
 ### 1. Formula Approval
@@ -150,16 +188,43 @@ transitions return stable failures without changing persisted state.
 This path crosses HTTP protocol handling, application orchestration, numeric
 domain rules, and snapshot storage.
 
+### 4. Production Trajectory Replay
+
+Public entry points are:
+
+- `GET /v1/trajectory`
+- `GET /v1/trajectory/export`
+- `GET /v1/trajectory/entries/{entryID}`
+- `GET /v1/runs/{id}/trajectory`
+- `GET /v1/vessels/{id}/trajectory`
+- `GET /v1/formulas/{id}/trajectory`
+
+Quality control drives a batch through approval, reservation, fermentation,
+observations, conditioning, completion, and vessel cleaning. Every accepted
+action appends one hash-chained ledger row in the same transaction as the
+aggregate change; rejected actions append nothing. The ledger is then read by
+global cursor pages, by entity lineage, and by occurrence-time window, and
+exported as NDJSON. Cursors and row order stay identical while new rows append
+and after reopening the data directory. Repeating a write with the same
+`Idempotency-Key` and parameters returns the original result with no second row.
+
+This path crosses HTTP protocol handling, use-case orchestration, domain ledger
+rules, atomic snapshot storage, and recovery.
+
 ## Modules
 
 - `cmd/fermentctl`: executable entry point for the HTTP service and bounded
   workflow checks.
 - `internal/config`: environment and command-line configuration.
 - `internal/clock`: deterministic clock boundary for production and checks.
-- `internal/domain`: entities, validation, state transitions, and metrics.
-- `internal/service`: use-case orchestration and revision coordination.
-- `internal/storage`: snapshot repository, atomic replacement, and locking.
-- `internal/httpapi`: routing, strict JSON decoding, error mapping, and health.
+- `internal/domain`: entities, validation, state transitions, metrics, and the
+  trajectory ledger types, sealing, hashing, verification, and indexes.
+- `internal/service`: use-case orchestration, revision coordination, ledger
+  append coordination, idempotency fingerprints, and ledger reads/export.
+- `internal/storage`: snapshot repository, atomic replacement, locking, and
+  startup ledger verification.
+- `internal/httpapi`: routing, strict JSON decoding, error mapping, idempotency
+  headers, ledger pagination, entity timelines, and NDJSON export.
 - `internal/workflowcheck`: real HTTP workflow checks used by the executable.
 
 The dependency direction is:
@@ -175,7 +240,8 @@ The domain package does not import outer packages.
 ## API Behavior
 
 All business routes are JSON under `/v1`. A successful write returns the
-updated aggregate and its version. A failed write returns:
+updated aggregate and its version; a replayed idempotent write also sets
+`Idempotency-Replayed: true`. A failed write returns:
 
 ```json
 {
@@ -187,16 +253,42 @@ updated aggregate and its version. A failed write returns:
 ```
 
 Write requests may include `X-Expected-Version`. When present, the service
-rejects a stale write instead of overwriting newer state.
+rejects a stale write instead of overwriting newer state. Write requests may
+also include `Idempotency-Key` (8..128 printable characters); the same key and
+parameters replay the original result, the same key with different parameters
+returns `idempotency_conflict`.
 
-`GET /healthz` returns process health and the current snapshot revision.
+Ledger reads are:
+
+- `GET /v1/trajectory`
+- `GET /v1/trajectory/export`
+- `GET /v1/trajectory/entries/{entryID}`
+- `GET /v1/formulas/{id}/trajectory`
+- `GET /v1/vessels/{id}/trajectory`
+- `GET /v1/runs/{id}/trajectory`
+
+The paged routes accept `limit`, `cursor`, and, on the global route,
+`entity`/`entity_id`; all ledger routes accept RFC3339 `since`/`until`. Pages
+return `entries`, opaque `next_cursor`, and `limit`. The export route returns
+newline-delimited JSON in the same sequence order.
+
+`GET /healthz` returns process health, the current snapshot revision, and the
+latest trajectory sequence.
 
 ## Persistence And Concurrency
 
-The configured data directory contains `state.json`. Writes are serialized by
-an in-process mutex. The complete state is encoded, committed to durable
-storage, and then atomically renamed over the target. An update is not
-published in memory unless persistence succeeds.
+The configured data directory contains `state.json`, which holds the
+aggregates, lookup indexes, the trajectory entries, and the idempotency index.
+Writes are serialized by an in-process mutex. The complete state (business
+changes and ledger rows together) is encoded, committed to durable storage,
+and then atomically renamed over the target. An update is not published in
+memory unless persistence succeeds, so a business fact and its ledger entry
+cannot exist on only one side.
+
+On startup the trajectory hash chain is replayed and the entry id and aggregate
+version indexes are rebuilt from the ledger rows. A gap, duplicate entry id,
+duplicate aggregate version, broken hash link, or invalid idempotency pointer
+stops the process before HTTP serving begins.
 
 Reads use copied values and never expose repository-owned maps or slices. The
 default address is `127.0.0.1:8088`, the request body limit is 1 MiB, and all
@@ -204,19 +296,21 @@ workflow checks use temporary directories.
 
 ## Validation Plan
 
-The baseline declares `testing: deferred` and intentionally contains no unit
-tests, fixtures, integration tests, or browser E2E files. A later verification
-task owns systematic tests for validation boundaries, state transitions,
-numeric calculations, stale revisions, storage failures, and concurrent
-reservation attempts.
+The repository ships focused Go unit tests under `internal/domain`,
+`internal/service`, and `internal/storage`, covering ledger sealing and hash
+verification, tamper detection, version dedup, idempotent replay, transaction
+rollback, persistence failures, startup verification, cursor stability, entity
+and time-window reads, and concurrent writes under the race detector.
 
-The current build command is `go build ./...`. Three bounded production checks
-start the real HTTP handler, issue real JSON requests, check success and failure
-behavior, and exit without external services:
+The current build command is `go build ./...`; the current test command is
+`go test ./...`. Four bounded production checks start the real HTTP handler,
+issue real JSON requests, check success and failure behavior, and exit without
+external services:
 
 - `go run ./cmd/fermentctl check formula-approval`
 - `go run ./cmd/fermentctl check vessel-run-lifecycle`
 - `go run ./cmd/fermentctl check observations-completion`
+- `go run ./cmd/fermentctl check trajectory-ledger`
 
 ## Scope Limits
 

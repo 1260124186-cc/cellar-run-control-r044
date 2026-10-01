@@ -27,7 +27,11 @@ func registerFormulaRoutes(mux *http.ServeMux, app *service.Service) {
 		if !handleDecode(response, err) {
 			return
 		}
-		formula, err := app.CreateFormula(service.CreateFormulaInput{
+		idempotencyKey, err := idempotencyHeader(request)
+		if !handleDecode(response, err) {
+			return
+		}
+		formula, replayed, err := app.CreateFormula(service.CreateFormulaInput{
 			Name:                  body.Name,
 			Style:                 body.Style,
 			TargetOriginalGravity: body.TargetOriginalGravity,
@@ -35,11 +39,13 @@ func registerFormulaRoutes(mux *http.ServeMux, app *service.Service) {
 			MaxFermentationTempC:  body.MaxFermentationTempC,
 			MinimumDays:           body.MinimumDays,
 			MaximumDays:           body.MaximumDays,
+			IdempotencyKey:        idempotencyKey,
 		})
 		if err != nil {
 			writeDomainError(response, err)
 			return
 		}
+		writeReplayHeader(response, replayed)
 		writeJSON(response, http.StatusCreated, formula)
 	})
 
@@ -70,12 +76,21 @@ func registerFormulaRoutes(mux *http.ServeMux, app *service.Service) {
 		if !handleDecode(response, err) {
 			return
 		}
-		formula, err := app.SetFormulaSteps(request.PathValue("id"),
-			service.SetFormulaStepsInput{ExpectedVersion: expected, Steps: body.Steps})
+		idempotencyKey, err := idempotencyHeader(request)
+		if !handleDecode(response, err) {
+			return
+		}
+		formula, replayed, err := app.SetFormulaSteps(request.PathValue("id"),
+			service.SetFormulaStepsInput{
+				ExpectedVersion: expected,
+				Steps:           body.Steps,
+				IdempotencyKey:  idempotencyKey,
+			})
 		if err != nil {
 			writeDomainError(response, err)
 			return
 		}
+		writeReplayHeader(response, replayed)
 		writeJSON(response, http.StatusOK, formula)
 	})
 
@@ -84,12 +99,17 @@ func registerFormulaRoutes(mux *http.ServeMux, app *service.Service) {
 		if !handleDecode(response, err) {
 			return
 		}
-		formula, err := app.ApproveFormula(request.PathValue("id"),
-			service.VersionInput{ExpectedVersion: expected})
+		idempotencyKey, err := idempotencyHeader(request)
+		if !handleDecode(response, err) {
+			return
+		}
+		formula, replayed, err := app.ApproveFormula(request.PathValue("id"),
+			service.VersionInput{ExpectedVersion: expected, IdempotencyKey: idempotencyKey})
 		if err != nil {
 			writeDomainError(response, err)
 			return
 		}
+		writeReplayHeader(response, replayed)
 		writeJSON(response, http.StatusOK, formula)
 	})
 
@@ -98,12 +118,17 @@ func registerFormulaRoutes(mux *http.ServeMux, app *service.Service) {
 		if !handleDecode(response, err) {
 			return
 		}
-		formula, err := app.RetireFormula(request.PathValue("id"),
-			service.VersionInput{ExpectedVersion: expected})
+		idempotencyKey, err := idempotencyHeader(request)
+		if !handleDecode(response, err) {
+			return
+		}
+		formula, replayed, err := app.RetireFormula(request.PathValue("id"),
+			service.VersionInput{ExpectedVersion: expected, IdempotencyKey: idempotencyKey})
 		if err != nil {
 			writeDomainError(response, err)
 			return
 		}
+		writeReplayHeader(response, replayed)
 		writeJSON(response, http.StatusOK, formula)
 	})
 }

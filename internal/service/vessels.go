@@ -6,7 +6,7 @@ import (
 	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/domain"
 )
 
-func (s *Service) CreateVessel(input CreateVesselInput) (domain.Vessel, error) {
+func (s *Service) CreateVessel(input CreateVesselInput) (domain.Vessel, bool, error) {
 	now := s.clock.Now()
 	vessel := domain.Vessel{
 		Code:      domain.NormalizeVesselCode(input.Code),
@@ -17,27 +17,63 @@ func (s *Service) CreateVessel(input CreateVesselInput) (domain.Vessel, error) {
 		UpdatedAt: now,
 	}
 	if err := vessel.Validate(); err != nil {
-		return domain.Vessel{}, err
+		return domain.Vessel{}, false, err
 	}
 	id, err := generateEntityID("vessel")
 	if err != nil {
-		return domain.Vessel{}, domain.NewError(domain.CodeStorage, err.Error())
+		return domain.Vessel{}, false, domain.NewError(domain.CodeStorage, err.Error())
 	}
 	vessel.ID = id
+	fingerprint, err := fingerprintAction(domain.ActionVesselCreated, map[string]any{
+		"code":            vessel.Code,
+		"capacity_liters": input.CapacityL,
+	})
+	if err != nil {
+		return domain.Vessel{}, false, domain.NewError(domain.CodeStorage, err.Error())
+	}
 
+	var updated domain.Vessel
+	var replayed bool
 	err = s.store.Execute(func(snapshot *domain.Snapshot) error {
+		replay, err := beginIdempotent(snapshot, input.IdempotencyKey, fingerprint)
+		if err != nil {
+			return err
+		}
+		if replay.replayed {
+			updated, err = replayVessel(snapshot, replay.entry)
+			if err != nil {
+				return err
+			}
+			replayed = true
+			return nil
+		}
 		if _, exists := snapshot.VesselIndex[vessel.Code]; exists {
 			return domain.NewError(domain.CodeVesselConflict,
 				"a vessel with the same code already exists")
 		}
 		snapshot.Vessels[vessel.ID] = vessel
 		snapshot.VesselIndex[vessel.Code] = vessel.ID
+		draft := domain.TrajectoryDraft{
+			Action:     domain.ActionVesselCreated,
+			OccurredAt: now,
+			Refs:       []domain.TrajectoryRef{domain.NewSubjectRef(domain.EntityVessel, vessel.ID, vessel.Version)},
+			Payload: map[string]any{
+				"code":            vessel.Code,
+				"capacity_liters": vessel.CapacityL,
+				"state":           string(vessel.State),
+				"created_at":      utcStamp(now),
+			},
+		}
+		if _, err := appendEntry(snapshot, draft, now, input.IdempotencyKey, fingerprint); err != nil {
+			return err
+		}
+		updated = vessel
 		return nil
 	})
 	if err != nil {
-		return domain.Vessel{}, err
+		return domain.Vessel{}, false, err
 	}
-	return vessel, nil
+	return updated, replayed, nil
 }
 
 func (s *Service) GetVessel(id string) (domain.Vessel, error) {
@@ -80,9 +116,30 @@ func (s *Service) ListVessels() ([]domain.Vessel, error) {
 func (s *Service) FinishCleaning(
 	id string,
 	input FinishCleaningInput,
-) (domain.Vessel, error) {
+) (domain.Vessel, bool, error) {
+	fingerprint, err := fingerprintAction(domain.ActionCleaningFinished, map[string]any{
+		"vessel_id":        id,
+		"expected_version": versionFingerprint(input.ExpectedVersion),
+	})
+	if err != nil {
+		return domain.Vessel{}, false, domain.NewError(domain.CodeStorage, err.Error())
+	}
+
 	var updated domain.Vessel
-	err := s.store.Execute(func(snapshot *domain.Snapshot) error {
+	var replayed bool
+	err = s.store.Execute(func(snapshot *domain.Snapshot) error {
+		replay, err := beginIdempotent(snapshot, input.IdempotencyKey, fingerprint)
+		if err != nil {
+			return err
+		}
+		if replay.replayed {
+			updated, err = replayVessel(snapshot, replay.entry)
+			if err != nil {
+				return err
+			}
+			replayed = true
+			return nil
+		}
 		vessel, ok := snapshot.Vessels[id]
 		if !ok {
 			return domain.NewError(domain.CodeVesselNotFound, "vessel was not found")
@@ -103,22 +160,61 @@ func (s *Service) FinishCleaning(
 			return domain.NewError(domain.CodeRunState,
 				"associated run is still open")
 		}
-		if err := vessel.FinishCleaning(s.clock.Now()); err != nil {
+		now := s.clock.Now()
+		if err := vessel.FinishCleaning(now); err != nil {
 			return err
 		}
 		snapshot.Vessels[id] = vessel
+		runID := run.ID
+		draft := domain.TrajectoryDraft{
+			Action:     domain.ActionCleaningFinished,
+			OccurredAt: now,
+			Refs: []domain.TrajectoryRef{
+				domain.NewSubjectRef(domain.EntityVessel, id, vessel.Version),
+				domain.NewTrajectoryRef(domain.EntityRun, runID),
+				domain.NewTrajectoryRef(domain.EntityFormula, run.FormulaID),
+			},
+			Payload: map[string]any{
+				"vessel_state": string(vessel.State),
+				"run_state":    string(run.State),
+			},
+		}
+		if _, err := appendEntry(snapshot, draft, now, input.IdempotencyKey, fingerprint); err != nil {
+			return err
+		}
 		updated = vessel
 		return nil
 	})
 	if err != nil {
-		return domain.Vessel{}, err
+		return domain.Vessel{}, false, err
 	}
-	return updated, nil
+	return updated, replayed, nil
 }
 
-func (s *Service) RetireVessel(id string, input VersionInput) (domain.Vessel, error) {
+func (s *Service) RetireVessel(id string, input VersionInput) (domain.Vessel, bool, error) {
+	fingerprint, err := fingerprintAction(domain.ActionVesselRetired, map[string]any{
+		"vessel_id":        id,
+		"expected_version": versionFingerprint(input.ExpectedVersion),
+	})
+	if err != nil {
+		return domain.Vessel{}, false, domain.NewError(domain.CodeStorage, err.Error())
+	}
+
 	var updated domain.Vessel
-	err := s.store.Execute(func(snapshot *domain.Snapshot) error {
+	var replayed bool
+	err = s.store.Execute(func(snapshot *domain.Snapshot) error {
+		replay, err := beginIdempotent(snapshot, input.IdempotencyKey, fingerprint)
+		if err != nil {
+			return err
+		}
+		if replay.replayed {
+			updated, err = replayVessel(snapshot, replay.entry)
+			if err != nil {
+				return err
+			}
+			replayed = true
+			return nil
+		}
 		vessel, ok := snapshot.Vessels[id]
 		if !ok {
 			return domain.NewError(domain.CodeVesselNotFound, "vessel was not found")
@@ -126,15 +222,27 @@ func (s *Service) RetireVessel(id string, input VersionInput) (domain.Vessel, er
 		if err := s.checkExpected(vessel.Version, input.ExpectedVersion); err != nil {
 			return err
 		}
-		if err := vessel.Retire(s.clock.Now()); err != nil {
+		now := s.clock.Now()
+		if err := vessel.Retire(now); err != nil {
 			return err
 		}
 		snapshot.Vessels[id] = vessel
+		draft := domain.TrajectoryDraft{
+			Action:     domain.ActionVesselRetired,
+			OccurredAt: now,
+			Refs:       []domain.TrajectoryRef{domain.NewSubjectRef(domain.EntityVessel, id, vessel.Version)},
+			Payload: map[string]any{
+				"vessel_state": string(vessel.State),
+			},
+		}
+		if _, err := appendEntry(snapshot, draft, now, input.IdempotencyKey, fingerprint); err != nil {
+			return err
+		}
 		updated = vessel
 		return nil
 	})
 	if err != nil {
-		return domain.Vessel{}, err
+		return domain.Vessel{}, false, err
 	}
-	return updated, nil
+	return updated, replayed, nil
 }

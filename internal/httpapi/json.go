@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/domain"
 )
@@ -85,14 +86,45 @@ func statusForCode(code domain.Code) int {
 		domain.CodeFormulaInUse, domain.CodeVesselConflict,
 		domain.CodeVesselUnavailable, domain.CodeVesselState,
 		domain.CodeRunConflict, domain.CodeRunState,
-		domain.CodeObservationConflict:
+		domain.CodeObservationConflict, domain.CodeTrajectoryConflict,
+		domain.CodeIdempotencyConflict:
 		return http.StatusConflict
 	case domain.CodeRevisionConflict:
 		return http.StatusPreconditionFailed
-	case domain.CodeStorage:
+	case domain.CodeTrajectoryNotFound:
+		return http.StatusNotFound
+	case domain.CodeStorage, domain.CodeTrajectoryCorrupt:
 		return http.StatusInternalServerError
 	default:
 		return http.StatusInternalServerError
+	}
+}
+
+// idempotencyHeader reads the optional Idempotency-Key header. An empty header
+// is a plain request; a supplied key must be 8..128 printable characters so
+// retries cannot be silently merged on stray whitespace.
+func idempotencyHeader(request *http.Request) (string, error) {
+	value := strings.TrimSpace(request.Header.Get("Idempotency-Key"))
+	if value == "" {
+		return "", nil
+	}
+	if len(value) < 8 || len(value) > 128 {
+		return "", domain.FieldError(domain.CodeInvalidInput,
+			"Idempotency-Key", "must contain between 8 and 128 characters")
+	}
+	for _, r := range value {
+		if r < 0x21 || r > 0x7e {
+			return "", domain.FieldError(domain.CodeInvalidInput,
+				"Idempotency-Key", "must contain only printable ASCII characters")
+		}
+	}
+	return value, nil
+}
+
+// writeReplay marks a response as the replay of an earlier successful write.
+func writeReplayHeader(response http.ResponseWriter, replayed bool) {
+	if replayed {
+		response.Header().Set("Idempotency-Replayed", "true")
 	}
 }
 

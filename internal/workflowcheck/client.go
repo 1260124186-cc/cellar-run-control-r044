@@ -16,8 +16,9 @@ type client struct {
 }
 
 type response struct {
-	status int
-	body   []byte
+	status  int
+	body    []byte
+	headers http.Header
 }
 
 func newClient(baseURL string) *client {
@@ -35,6 +36,19 @@ func (c *client) call(
 	payload any,
 	expectedVersion *int64,
 ) (response, error) {
+	headers := map[string]string{}
+	if expectedVersion != nil {
+		headers["X-Expected-Version"] = fmt.Sprintf("%d", *expectedVersion)
+	}
+	return c.callWith(method, path, payload, headers)
+}
+
+func (c *client) callWith(
+	method string,
+	path string,
+	payload any,
+	headers map[string]string,
+) (response, error) {
 	var body io.Reader
 	if payload != nil {
 		encoded, err := json.Marshal(payload)
@@ -50,8 +64,8 @@ func (c *client) call(
 	if payload != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}
-	if expectedVersion != nil {
-		request.Header.Set("X-Expected-Version", fmt.Sprintf("%d", *expectedVersion))
+	for name, value := range headers {
+		request.Header.Set(name, value)
 	}
 	raw, err := c.http.Do(request)
 	if err != nil {
@@ -62,7 +76,7 @@ func (c *client) call(
 	if err != nil {
 		return response{}, fmt.Errorf("read response: %w", err)
 	}
-	return response{status: raw.StatusCode, body: content}, nil
+	return response{status: raw.StatusCode, body: content, headers: raw.Header}, nil
 }
 
 func (r response) decode(target any) error {
