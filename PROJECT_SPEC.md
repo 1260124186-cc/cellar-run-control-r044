@@ -157,6 +157,9 @@ domain rules, and snapshot storage.
 - `internal/config`: environment and command-line configuration.
 - `internal/clock`: deterministic clock boundary for production and checks.
 - `internal/domain`: entities, validation, state transitions, and metrics.
+- `internal/ledger`: append-only production trajectory kernel: entries,
+  idempotency keys, lineage/time filters, cursor paging, export, and restart
+  validation.
 - `internal/service`: use-case orchestration and revision coordination.
 - `internal/storage`: snapshot repository, atomic replacement, and locking.
 - `internal/httpapi`: routing, strict JSON decoding, error mapping, and health.
@@ -170,7 +173,11 @@ The dependency direction is:
 
 `storage -> domain`
 
-The domain package does not import outer packages.
+`service -> ledger`
+
+`storage -> ledger`
+
+The domain and ledger packages do not import outer packages.
 
 ## API Behavior
 
@@ -191,6 +198,19 @@ rejects a stale write instead of overwriting newer state.
 
 `GET /healthz` returns process health and the current snapshot revision.
 
+### Production Trajectory Reads
+
+- `GET /v1/trajectory`: paged JSON read returning `entries`, `has_more`,
+  `next_cursor`, and `limit`.
+- `GET /v1/trajectory/export`: complete newline-delimited JSON export.
+
+Both accept optional `entity_type` plus `entity_id` (required together; one of
+`formula`, `vessel`, `run`) and an RFC3339 `from` occurrence-time cursor. The
+paged read also accepts `limit` (1 to 500, default 100) and an opaque
+`cursor`. Reads and exports always emit entries in gapless global sequence
+order regardless of the time filter, so pagination stays stable across
+exports and restarts.
+
 ## Persistence And Concurrency
 
 The configured data directory contains `state.json`. Writes are serialized by
@@ -202,21 +222,43 @@ Reads use copied values and never expose repository-owned maps or slices. The
 default address is `127.0.0.1:8088`, the request body limit is 1 MiB, and all
 workflow checks use temporary directories.
 
+## Production Trajectory Ledger
+
+Every successful business action appends one immutable trajectory entry in the
+same atomic snapshot transaction as the business state change. Entries record
+a gapless global sequence, a stable action name, occurrence time, the subject
+entity and its resulting entity version, source and target states, lineage
+references to related formula/vessel/run entities, and action-specific detail.
+
+- The sequence is assigned at commit time and is the sole read and export
+  order; it survives restart unchanged.
+- `(subject type, subject id, entity version)` is the idempotency key. The
+  same version processed again returns the existing entry without a duplicate
+  row; conflicting payloads for the same key are rejected.
+- Entity reads match subject and lineage references, linking a batch through
+  its formula, vessel, and run; the time cursor filters by occurrence while
+  preserving sequence order.
+- If a trajectory append fails, the business mutation in that transaction is
+  never persisted, and vice versa: there is no one-sided fact.
+- Startup validates persisted entries: gapless sequences beginning at 1 and
+  unique idempotency keys. Corruption prevents HTTP startup.
+
 ## Validation Plan
 
-The baseline declares `testing: deferred` and intentionally contains no unit
-tests, fixtures, integration tests, or browser E2E files. A later verification
-task owns systematic tests for validation boundaries, state transitions,
-numeric calculations, stale revisions, storage failures, and concurrent
-reservation attempts.
+The baseline originally declared `testing: deferred`. The trajectory work adds
+focused unit tests for the ledger kernel and storage transactions plus a
+fourth production check; later verification still owns systematic tests for
+validation boundaries, state transitions, numeric calculations, stale
+revisions, storage failures, and concurrent reservation attempts.
 
-The current build command is `go build ./...`. Three bounded production checks
-start the real HTTP handler, issue real JSON requests, check success and failure
+The current build command is `go build ./...`. Bounded production checks start
+the real HTTP handler, issue real JSON requests, check success and failure
 behavior, and exit without external services:
 
 - `go run ./cmd/fermentctl check formula-approval`
 - `go run ./cmd/fermentctl check vessel-run-lifecycle`
 - `go run ./cmd/fermentctl check observations-completion`
+- `go run ./cmd/fermentctl check production-trajectory`
 
 ## Scope Limits
 

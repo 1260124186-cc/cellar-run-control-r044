@@ -1,6 +1,10 @@
 package domain
 
-import "time"
+import (
+	"time"
+
+	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/ledger"
+)
 
 type Snapshot struct {
 	Revision    int64                      `json:"revision"`
@@ -11,6 +15,10 @@ type Snapshot struct {
 	NameIndex   map[string]string          `json:"formula_name_index"`
 	VesselIndex map[string]string          `json:"vessel_code_index"`
 	RunIndex    map[string]string          `json:"run_code_index"`
+	// Trajectory is the append-only production ledger. It commits in the
+	// same atomic snapshot write as the business state, so a business fact
+	// and its ledger row can never diverge.
+	Trajectory *ledger.Log `json:"trajectory"`
 }
 
 func EmptySnapshot() Snapshot {
@@ -22,6 +30,7 @@ func EmptySnapshot() Snapshot {
 		NameIndex:   map[string]string{},
 		VesselIndex: map[string]string{},
 		RunIndex:    map[string]string{},
+		Trajectory:  ledger.New(),
 	}
 }
 
@@ -51,6 +60,11 @@ func (s Snapshot) Clone() Snapshot {
 	}
 	for key, value := range s.RunIndex {
 		cloned.RunIndex[key] = value
+	}
+	if s.Trajectory != nil {
+		cloned.Trajectory = s.Trajectory.Clone()
+	} else {
+		cloned.Trajectory = ledger.New()
 	}
 	return cloned
 }

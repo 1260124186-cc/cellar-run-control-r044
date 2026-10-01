@@ -6,7 +6,7 @@
     ".go"
   ],
   "build_command": "go build ./...",
-  "testing": "deferred",
+  "testing": "present",
   "workflow_checks": [
     {
       "workflow_id": "formula-approval",
@@ -19,6 +19,10 @@
     {
       "workflow_id": "observations-completion",
       "command": "go run ./cmd/fermentctl check observations-completion"
+    },
+    {
+      "workflow_id": "production-trajectory",
+      "command": "go run ./cmd/fermentctl check production-trajectory"
     }
   ]
 }

@@ -4,6 +4,7 @@ import (
 	"sort"
 
 	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/domain"
+	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/ledger"
 )
 
 func (s *Service) CreateVessel(input CreateVesselInput) (domain.Vessel, error) {
@@ -32,7 +33,18 @@ func (s *Service) CreateVessel(input CreateVesselInput) (domain.Vessel, error) {
 		}
 		snapshot.Vessels[vessel.ID] = vessel
 		snapshot.VesselIndex[vessel.Code] = vessel.ID
-		return nil
+		return appendTrajectory(snapshot, ledger.Entry{
+			Action:        ledger.ActionVesselCreated,
+			OccurredAt:    now,
+			Subject:       vesselRef(vessel),
+			EntityVersion: vessel.Version,
+			FromState:     "",
+			ToState:       string(domain.VesselAvailable),
+			Detail: map[string]any{
+				"code":            vessel.Code,
+				"capacity_liters": vessel.CapacityL,
+			},
+		})
 	})
 	if err != nil {
 		return domain.Vessel{}, err
@@ -103,12 +115,22 @@ func (s *Service) FinishCleaning(
 			return domain.NewError(domain.CodeRunState,
 				"associated run is still open")
 		}
-		if err := vessel.FinishCleaning(s.clock.Now()); err != nil {
+		fromState := vessel.State
+		now := s.clock.Now()
+		if err := vessel.FinishCleaning(now); err != nil {
 			return err
 		}
 		snapshot.Vessels[id] = vessel
 		updated = vessel
-		return nil
+		return appendTrajectory(snapshot, ledger.Entry{
+			Action:        ledger.ActionVesselCleaned,
+			OccurredAt:    now,
+			Subject:       vesselRef(vessel),
+			EntityVersion: vessel.Version,
+			FromState:     string(fromState),
+			ToState:       string(vessel.State),
+			Lineage:       []ledger.Ref{runRef(run)},
+		})
 	})
 	if err != nil {
 		return domain.Vessel{}, err
@@ -126,12 +148,21 @@ func (s *Service) RetireVessel(id string, input VersionInput) (domain.Vessel, er
 		if err := s.checkExpected(vessel.Version, input.ExpectedVersion); err != nil {
 			return err
 		}
-		if err := vessel.Retire(s.clock.Now()); err != nil {
+		fromState := vessel.State
+		now := s.clock.Now()
+		if err := vessel.Retire(now); err != nil {
 			return err
 		}
 		snapshot.Vessels[id] = vessel
 		updated = vessel
-		return nil
+		return appendTrajectory(snapshot, ledger.Entry{
+			Action:        ledger.ActionVesselRetired,
+			OccurredAt:    now,
+			Subject:       vesselRef(vessel),
+			EntityVersion: vessel.Version,
+			FromState:     string(fromState),
+			ToState:       string(vessel.State),
+		})
 	})
 	if err != nil {
 		return domain.Vessel{}, err

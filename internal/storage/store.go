@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/domain"
+	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/ledger"
 )
 
 const stateFileName = "state.json"
@@ -78,6 +79,10 @@ func normalizeSnapshot(value domain.Snapshot) (domain.Snapshot, error) {
 	if value.RunIndex == nil {
 		value.RunIndex = map[string]string{}
 	}
+	if value.Trajectory == nil {
+		value.Trajectory = ledger.New()
+	}
+	value.Trajectory.EnsureInitialized()
 	if err := validateIndexes(value); err != nil {
 		return domain.Snapshot{}, err
 	}

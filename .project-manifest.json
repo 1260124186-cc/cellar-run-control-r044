@@ -24,6 +24,11 @@
       "responsibility": "entities, validation, state transitions, and metrics"
     },
     {
+      "id": "ledger",
+      "path": "internal/ledger",
+      "responsibility": "append-only production trajectory with idempotency, lineage reads, cursor paging, and export"
+    },
+    {
       "id": "service",
       "path": "internal/service",
       "responsibility": "orchestrate formulas, vessels, runs, and observations"
@@ -50,7 +55,10 @@
       "resource_lifecycle",
       "error_propagation",
       "concurrency",
-      "validation_boundary"
+      "validation_boundary",
+      "append_only_log",
+      "idempotency",
+      "cursor_pagination"
     ]
   },
   "workflows": [
@@ -111,6 +119,26 @@
         "httpapi",
         "service",
         "domain",
+        "storage"
+      ]
+    },
+    {
+      "id": "production-trajectory",
+      "name": "Trace a batch through the append-only production ledger",
+      "entry": "GET /v1/trajectory",
+      "steps": [
+        "release a formula, register a vessel, and run a batch through completion and cleaning",
+        "read ledger entries by run, vessel, and formula bloodline and by time cursor",
+        "page the ledger with opaque cursors and export it as NDJSON",
+        "restart against the same data directory and verify identical gapless order"
+      ],
+      "success": "every key action appears once in gapless sequence order and stays stable across paging, export, and restart",
+      "failure": "rejected business actions add no ledger row and malformed reads return stable errors",
+      "verification": "the check issues real HTTP requests including a live process restart",
+      "module_ids": [
+        "httpapi",
+        "service",
+        "ledger",
         "storage"
       ]
     }

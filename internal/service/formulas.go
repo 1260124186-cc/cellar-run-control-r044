@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/domain"
+	"github.com/1260124186-cc/solo-0016-cellar-run-control/internal/ledger"
 )
 
 func (s *Service) CreateFormula(input CreateFormulaInput) (domain.Formula, error) {
@@ -41,7 +42,23 @@ func (s *Service) CreateFormula(input CreateFormulaInput) (domain.Formula, error
 		}
 		snapshot.Formulas[formula.ID] = formula
 		snapshot.NameIndex[nameKey] = formula.ID
-		return nil
+		return appendTrajectory(snapshot, ledger.Entry{
+			Action:        ledger.ActionFormulaCreated,
+			OccurredAt:    now,
+			Subject:       formulaRef(formula),
+			EntityVersion: formula.Version,
+			FromState:     "",
+			ToState:       string(domain.FormulaDraft),
+			Detail: map[string]any{
+				"name":                    formula.Name,
+				"style":                   formula.Style,
+				"target_original_gravity": formula.TargetOriginalGravity,
+				"target_final_gravity":    formula.TargetFinalGravity,
+				"max_fermentation_temp_c": formula.MaxFermentationTempC,
+				"minimum_days":            formula.MinimumDays,
+				"maximum_days":            formula.MaximumDays,
+			},
+		})
 	})
 	if err != nil {
 		return domain.Formula{}, err
@@ -62,13 +79,25 @@ func (s *Service) SetFormulaSteps(
 		if err := s.checkExpected(formula.Version, input.ExpectedVersion); err != nil {
 			return err
 		}
+		fromState := formula.State
+		now := s.clock.Now()
 		if err := formula.SetSteps(input.Steps); err != nil {
 			return err
 		}
-		formula.UpdatedAt = s.clock.Now()
+		formula.UpdatedAt = now
 		snapshot.Formulas[id] = formula
 		updated = formula.Clone()
-		return nil
+		return appendTrajectory(snapshot, ledger.Entry{
+			Action:        ledger.ActionFormulaStepsSet,
+			OccurredAt:    now,
+			Subject:       formulaRef(formula),
+			EntityVersion: formula.Version,
+			FromState:     string(fromState),
+			ToState:       string(formula.State),
+			Detail: map[string]any{
+				"step_count": len(formula.Steps),
+			},
+		})
 	})
 	if err != nil {
 		return domain.Formula{}, err
@@ -86,12 +115,24 @@ func (s *Service) ApproveFormula(id string, input VersionInput) (domain.Formula,
 		if err := s.checkExpected(formula.Version, input.ExpectedVersion); err != nil {
 			return err
 		}
-		if err := formula.Approve(s.clock.Now()); err != nil {
+		fromState := formula.State
+		now := s.clock.Now()
+		if err := formula.Approve(now); err != nil {
 			return err
 		}
 		snapshot.Formulas[id] = formula
 		updated = formula.Clone()
-		return nil
+		return appendTrajectory(snapshot, ledger.Entry{
+			Action:        ledger.ActionFormulaApproved,
+			OccurredAt:    now,
+			Subject:       formulaRef(formula),
+			EntityVersion: formula.Version,
+			FromState:     string(fromState),
+			ToState:       string(formula.State),
+			Detail: map[string]any{
+				"step_count": len(formula.Steps),
+			},
+		})
 	})
 	if err != nil {
 		return domain.Formula{}, err
@@ -116,12 +157,21 @@ func (s *Service) RetireFormula(id string, input VersionInput) (domain.Formula, 
 					"formula is attached to a run that is still open")
 			}
 		}
-		if err := formula.Retire(s.clock.Now()); err != nil {
+		fromState := formula.State
+		now := s.clock.Now()
+		if err := formula.Retire(now); err != nil {
 			return err
 		}
 		snapshot.Formulas[id] = formula
 		updated = formula.Clone()
-		return nil
+		return appendTrajectory(snapshot, ledger.Entry{
+			Action:        ledger.ActionFormulaRetired,
+			OccurredAt:    now,
+			Subject:       formulaRef(formula),
+			EntityVersion: formula.Version,
+			FromState:     string(fromState),
+			ToState:       string(formula.State),
+		})
 	})
 	if err != nil {
 		return domain.Formula{}, err
